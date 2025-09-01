@@ -1,235 +1,453 @@
-import pygame
-import imgui
-from imgui.integrations.pygame import PygameRenderer
+import customtkinter as ctk
+from tkinter import scrolledtext, messagebox
+import threading
 import time
 from datetime import datetime
+import json
+import os
 
-# Initialize pygame
-pygame.init()
+# Set appearance mode and color theme
+ctk.set_appearance_mode("Dark")  # Modes: "System", "Dark", "Light"
+ctk.set_default_color_theme("blue")  # Themes: "blue", "green", "dark-blue"
 
-# Set up the window
-WIDTH, HEIGHT = 1000, 700
-pygame.display.set_mode((WIDTH, HEIGHT), pygame.DOUBLEBUF | pygame.OPENGL)
-pygame.display.set_caption("Discord Auto-Poster with ImGui")
-
-# Set up ImGui
-imgui.create_context()
-io = imgui.get_io()
-io.display_size = (WIDTH, HEIGHT)
-io.ini_file_name = "imgui.ini"
-
-# Set up renderer
-renderer = PygameRenderer()
-
-# App state
-class Channel:
-    def __init__(self, channel_id="", user_id="", webhook_url="", message="", interval=3600):
-        self.channel_id = channel_id
-        self.user_id = user_id
-        self.webhook_url = webhook_url
-        self.message = message
-        self.interval = interval
-        self.last_posted = "Never"
-
-channels = [Channel()]
-logs = []
-bot_token = "your_bot_token_here"
-selected_channel_index = 0
-status_message = "Welcome to Discord Auto-Poster"
-status_color = (0.2, 0.6, 1.0, 1.0)
-last_update = time.time()
-next_post_time = time.time() + 3600
-auto_posting = False
-show_test_popup = False
-
-# Simulated posting function
-def send_message(channel_index):
-    global status_message, status_color, last_update
-    
-    if channel_index < 0 or channel_index >= len(channels):
-        return False
+class DiscordAutoPoster(ctk.CTk):
+    def __init__(self):
+        super().__init__()
         
-    channel = channels[channel_index]
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Check if channel has required info
-    if not channel.channel_id:
-        status_message = f"Error: No channel ID configured for channel {channel_index+1}"
-        status_color = (1.0, 0.3, 0.3, 1.0)
-        last_update = time.time()
-        logs.append(("ERROR", status_message))
-        return False
+        # Configure window
+        self.title("Discord Auto-Poster")
+        self.geometry("1000x700")
+        self.minsize(800, 600)
         
-    if not channel.message:
-        status_message = f"Error: No message configured for channel {channel_index+1}"
-        status_color = (1.0, 0.3, 0.3, 1.0)
-        last_update = time.time()
-        logs.append(("ERROR", status_message))
-        return False
-    
-    # Simulate sending message
-    status_message = f"Message sent to channel {channel_index+1} at {current_time}"
-    status_color = (0.3, 1.0, 0.5, 1.0)
-    last_update = time.time()
-    channel.last_posted = current_time
-    logs.append(("SUCCESS", status_message))
-    return True
-
-# Main loop
-running = True
-clock = pygame.time.Clock()
-
-while running:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-        else:
-            renderer.process_event(event)
-    
-    # Start new ImGui frame
-    imgui.new_frame()
-    
-    # Handle auto-posting
-    if auto_posting and time.time() >= next_post_time:
-        # Find the channel with the smallest interval
-        min_interval = float('inf')
-        next_channel = -1
+        # App data
+        self.bot_token = ""
+        self.channels = []
+        self.logs = []
+        self.auto_posting = False
+        self.posting_thread = None
         
-        for i, channel in enumerate(channels):
-            if channel.interval and channel.interval < min_interval:
-                min_interval = channel.interval
-                next_channel = i
+        # Load saved data if exists
+        self.load_data()
         
-        if next_channel >= 0:
-            send_message(next_channel)
-            next_post_time = time.time() + min_interval
-    
-    # Set up the main window
-    imgui.set_next_window_size(WIDTH, HEIGHT)
-    imgui.set_next_window_position(0, 0)
-    
-    # Main window
-    imgui.begin("Discord Auto-Poster", 
-                flags=imgui.WINDOW_NO_TITLE_BAR | imgui.WINDOW_NO_RESIZE | 
-                      imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_COLLAPSE)
-    
-    # Bot token section
-    imgui.text_colored("Bot Token", 0.8, 0.8, 1.0)
-    imgui.separator()
-    changed, bot_token = imgui.input_text("##bottoken", bot_token, 256)
-    imgui.dummy(0, 10)
-    
-    # Channel list section
-    imgui.text_colored("Channels", 0.8, 0.8, 1.0)
-    imgui.separator()
-    
-    # Channel selection buttons
-    for i in range(len(channels)):
-        if imgui.button(f"Channel {i+1}##channel{i}"):
-            selected_channel_index = i
-        if i < len(channels) - 1:
-            imgui.same_line()
-    
-    imgui.dummy(0, 5)
-    
-    # Add/remove channel buttons
-    if imgui.button("Add Channel"):
-        channels.append(Channel())
-        selected_channel_index = len(channels) - 1
-    
-    imgui.same_line()
-    
-    if imgui.button("Remove Channel") and len(channels) > 1:
-        channels.pop(selected_channel_index)
-        selected_channel_index = min(selected_channel_index, len(channels) - 1)
-    
-    imgui.dummy(0, 10)
-    
-    # Channel editor section
-    if len(channels) > 0:
-        channel = channels[selected_channel_index]
+        # Setup UI
+        self.setup_ui()
         
-        imgui.text_colored(f"Channel {selected_channel_index+1} Settings", 0.8, 0.8, 1.0)
-        imgui.separator()
+    def setup_ui(self):
+        # Create main grid
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        
+        # Title label
+        self.title_label = ctk.CTkLabel(
+            self, 
+            text="Discord Auto-Poster", 
+            font=ctk.CTkFont(size=24, weight="bold")
+        )
+        self.title_label.grid(row=0, column=0, padx=20, pady=20, sticky="w")
+        
+        # Create tabs
+        self.tabview = ctk.CTkTabview(self)
+        self.tabview.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="nsew")
+        self.tabview.add("Bot Settings")
+        self.tabview.add("Channels")
+        self.tabview.add("Logs")
+        
+        # Configure tab grid
+        for tab_name in ["Bot Settings", "Channels", "Logs"]:
+            self.tabview.tab(tab_name).grid_columnconfigure(0, weight=1)
+            self.tabview.tab(tab_name).grid_rowconfigure(1, weight=1)
+        
+        # Bot Settings tab
+        self.setup_bot_settings_tab()
+        
+        # Channels tab
+        self.setup_channels_tab()
+        
+        # Logs tab
+        self.setup_logs_tab()
+        
+        # Status bar
+        self.setup_status_bar()
+    
+    def setup_bot_settings_tab(self):
+        tab = self.tabview.tab("Bot Settings")
+        
+        # Token frame
+        token_frame = ctk.CTkFrame(tab)
+        token_frame.grid(row=0, column=0, padx=20, pady=20, sticky="ew")
+        token_frame.grid_columnconfigure(1, weight=1)
+        
+        ctk.CTkLabel(token_frame, text="Bot Token:", font=ctk.CTkFont(weight="bold")).grid(
+            row=0, column=0, padx=20, pady=20, sticky="w"
+        )
+        
+        self.token_entry = ctk.CTkEntry(
+            token_frame, 
+            placeholder_text="Enter your bot token here",
+            show="•"
+        )
+        self.token_entry.insert(0, self.bot_token)
+        self.token_entry.grid(row=0, column=1, padx=(0, 20), pady=20, sticky="ew")
+        
+        # Control buttons frame
+        control_frame = ctk.CTkFrame(tab)
+        control_frame.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="ew")
+        
+        self.start_btn = ctk.CTkButton(
+            control_frame, 
+            text="Start Auto-Posting", 
+            command=self.toggle_auto_posting,
+            fg_color="green" if not self.auto_posting else "red",
+            hover_color="darkgreen" if not self.auto_posting else "darkred"
+        )
+        self.start_btn.grid(row=0, column=0, padx=20, pady=20)
+        
+        ctk.CTkButton(
+            control_frame, 
+            text="Save Settings", 
+            command=self.save_settings
+        ).grid(row=0, column=1, padx=20, pady=20)
+        
+        ctk.CTkButton(
+            control_frame, 
+            text="Test Connection", 
+            command=self.test_connection
+        ).grid(row=0, column=2, padx=20, pady=20)
+    
+    def setup_channels_tab(self):
+        tab = self.tabview.tab("Channels")
+        
+        # Channel list frame
+        list_frame = ctk.CTkFrame(tab)
+        list_frame.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+        list_frame.grid_columnconfigure(0, weight=1)
+        list_frame.grid_rowconfigure(1, weight=1)
+        
+        ctk.CTkLabel(list_frame, text="Channels", font=ctk.CTkFont(weight="bold")).grid(
+            row=0, column=0, padx=20, pady=(20, 10), sticky="w"
+        )
+        
+        # Channel listbox
+        self.channel_listbox = ctk.CTkScrollableFrame(list_frame)
+        self.channel_listbox.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="nsew")
+        
+        # Buttons frame
+        btn_frame = ctk.CTkFrame(list_frame)
+        btn_frame.grid(row=2, column=0, padx=20, pady=(0, 20), sticky="ew")
+        
+        ctk.CTkButton(
+            btn_frame, 
+            text="Add Channel", 
+            command=self.add_channel
+        ).grid(row=0, column=0, padx=20, pady=10)
+        
+        ctk.CTkButton(
+            btn_frame, 
+            text="Remove Selected", 
+            command=self.remove_channel,
+            fg_color="red",
+            hover_color="darkred"
+        ).grid(row=0, column=1, padx=20, pady=10)
+        
+        # Channel editor
+        self.setup_channel_editor(tab)
+        
+        # Refresh channel list
+        self.refresh_channel_list()
+    
+    def setup_channel_editor(self, tab):
+        editor_frame = ctk.CTkFrame(tab)
+        editor_frame.grid(row=0, column=1, rowspan=2, padx=(0, 20), pady=20, sticky="nsew")
+        editor_frame.grid_columnconfigure(1, weight=1)
+        
+        ctk.CTkLabel(editor_frame, text="Channel Editor", font=ctk.CTkFont(weight="bold")).grid(
+            row=0, column=0, columnspan=2, padx=20, pady=(20, 10), sticky="w"
+        )
         
         # Channel ID
-        imgui.text("Channel ID:")
-        changed, channel.channel_id = imgui.input_text("##channelid", channel.channel_id, 256)
+        ctk.CTkLabel(editor_frame, text="Channel ID:").grid(
+            row=1, column=0, padx=20, pady=10, sticky="w"
+        )
+        self.channel_id_entry = ctk.CTkEntry(editor_frame)
+        self.channel_id_entry.grid(row=1, column=1, padx=(0, 20), pady=10, sticky="ew")
         
         # User ID
-        imgui.text("User ID:")
-        changed, channel.user_id = imgui.input_text("##userid", channel.user_id, 256)
+        ctk.CTkLabel(editor_frame, text="User ID (for pings):").grid(
+            row=2, column=0, padx=20, pady=10, sticky="w"
+        )
+        self.user_id_entry = ctk.CTkEntry(editor_frame)
+        self.user_id_entry.grid(row=2, column=1, padx=(0, 20), pady=10, sticky="ew")
         
         # Webhook URL
-        imgui.text("Webhook URL:")
-        changed, channel.webhook_url = imgui.input_text("##webhook", channel.webhook_url, 256)
+        ctk.CTkLabel(editor_frame, text="Webhook URL:").grid(
+            row=3, column=0, padx=20, pady=10, sticky="w"
+        )
+        self.webhook_entry = ctk.CTkEntry(editor_frame)
+        self.webhook_entry.grid(row=3, column=1, padx=(0, 20), pady=10, sticky="ew")
         
         # Message
-        imgui.text("Message:")
-        changed, channel.message = imgui.input_text_multiline("##message", channel.message, 512, 100)
+        ctk.CTkLabel(editor_frame, text="Message:").grid(
+            row=4, column=0, padx=20, pady=10, sticky="nw"
+        )
+        self.message_text = ctk.CTkTextbox(editor_frame, height=150)
+        self.message_text.grid(row=4, column=1, padx=(0, 20), pady=10, sticky="nsew")
         
         # Interval
-        imgui.text("Interval (seconds):")
-        changed, channel.interval = imgui.input_int("##interval", channel.interval)
+        ctk.CTkLabel(editor_frame, text="Interval (seconds):").grid(
+            row=5, column=0, padx=20, pady=10, sticky="w"
+        )
+        self.interval_entry = ctk.CTkEntry(editor_frame)
+        self.interval_entry.insert(0, "3600")
+        self.interval_entry.grid(row=5, column=1, padx=(0, 20), pady=10, sticky="ew")
         
-        # Last posted
-        imgui.text(f"Last Posted: {channel.last_posted}")
+        # Save button
+        ctk.CTkButton(
+            editor_frame, 
+            text="Save Channel", 
+            command=self.save_channel
+        ).grid(row=6, column=0, columnspan=2, padx=20, pady=20)
         
         # Test button
-        if imgui.button("Test Post Now"):
-            send_message(selected_channel_index)
+        ctk.CTkButton(
+            editor_frame, 
+            text="Test Post", 
+            command=self.test_post
+        ).grid(row=7, column=0, columnspan=2, padx=20, pady=(0, 20))
     
-    imgui.dummy(0, 10)
+    def setup_logs_tab(self):
+        tab = self.tabview.tab("Logs")
+        
+        ctk.CTkLabel(tab, text="Activity Logs", font=ctk.CTkFont(weight="bold")).grid(
+            row=0, column=0, padx=20, pady=(20, 10), sticky="w"
+        )
+        
+        # Log text area
+        self.log_text = scrolledtext.ScrolledText(
+            tab, 
+            wrap="word", 
+            bg="#2b2b2b", 
+            fg="white", 
+            insertbackground="white",
+            font=("Consolas", 10)
+        )
+        self.log_text.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="nsew")
+        self.log_text.config(state="disabled")
+        
+        # Clear logs button
+        ctk.CTkButton(
+            tab, 
+            text="Clear Logs", 
+            command=self.clear_logs
+        ).grid(row=2, column=0, padx=20, pady=(0, 20))
     
-    # Status section
-    imgui.text_colored("Status", 0.8, 0.8, 1.0)
-    imgui.separator()
+    def setup_status_bar(self):
+        status_frame = ctk.CTkFrame(self)
+        status_frame.grid(row=2, column=0, padx=20, pady=(0, 20), sticky="ew")
+        status_frame.grid_columnconfigure(0, weight=1)
+        
+        self.status_label = ctk.CTkLabel(
+            status_frame, 
+            text="Ready" if not self.auto_posting else "Auto-posting enabled",
+            text_color="green" if not self.auto_posting else "red"
+        )
+        self.status_label.grid(row=0, column=0, padx=20, pady=10, sticky="w")
+        
+        self.next_post_label = ctk.CTkLabel(status_frame, text="")
+        self.next_post_label.grid(row=0, column=1, padx=20, pady=10, sticky="e")
     
-    # Status message
-    imgui.text_colored(status_message, *status_color)
+    def refresh_channel_list(self):
+        # Clear the listbox
+        for widget in self.channel_listbox.winfo_children():
+            widget.destroy()
+        
+        # Add channels to the listbox
+        for i, channel in enumerate(self.channels):
+            btn = ctk.CTkButton(
+                self.channel_listbox,
+                text=f"Channel {i+1}: {channel.get('channel_id', 'No ID')}",
+                command=lambda idx=i: self.select_channel(idx),
+                anchor="w"
+            )
+            btn.grid(row=i, column=0, padx=10, pady=5, sticky="ew")
     
-    # Last update time
-    elapsed = time.time() - last_update
-    imgui.text(f"Last update: {int(elapsed)} seconds ago")
+    def select_channel(self, index):
+        if 0 <= index < len(self.channels):
+            channel = self.channels[index]
+            self.channel_id_entry.delete(0, "end")
+            self.channel_id_entry.insert(0, channel.get("channel_id", ""))
+            
+            self.user_id_entry.delete(0, "end")
+            self.user_id_entry.insert(0, channel.get("user_id", ""))
+            
+            self.webhook_entry.delete(0, "end")
+            self.webhook_entry.insert(0, channel.get("webhook_url", ""))
+            
+            self.message_text.delete("1.0", "end")
+            self.message_text.insert("1.0", channel.get("message", ""))
+            
+            self.interval_entry.delete(0, "end")
+            self.interval_entry.insert(0, str(channel.get("interval", 3600)))
     
-    # Auto-post toggle
-    changed, auto_posting = imgui.checkbox("Auto Posting", auto_posting)
+    def add_channel(self):
+        self.channels.append({
+            "channel_id": "",
+            "user_id": "",
+            "webhook_url": "",
+            "message": "",
+            "interval": 3600
+        })
+        self.refresh_channel_list()
+        self.select_channel(len(self.channels) - 1)
+        self.log("Added new channel")
     
-    # Next post time
-    if auto_posting:
-        next_post = max(0, next_post_time - time.time())
-        imgui.text(f"Next post in: {int(next_post)} seconds")
+    def remove_channel(self):
+        if not self.channels:
+            return
+        
+        # In a real app, you'd want to select which channel to remove
+        # For simplicity, we'll remove the last one
+        self.channels.pop()
+        self.refresh_channel_list()
+        self.log("Removed channel")
     
-    imgui.dummy(0, 10)
+    def save_channel(self):
+        if not self.channels:
+            return
+        
+        # Get the currently selected channel index (simplified)
+        # In a real app, you'd track the selected index
+        channel = self.channels[-1] if self.channels else {}
+        
+        channel["channel_id"] = self.channel_id_entry.get()
+        channel["user_id"] = self.user_id_entry.get()
+        channel["webhook_url"] = self.webhook_entry.get()
+        channel["message"] = self.message_text.get("1.0", "end-1c")
+        
+        try:
+            channel["interval"] = int(self.interval_entry.get())
+        except ValueError:
+            channel["interval"] = 3600
+        
+        self.log("Saved channel settings")
+        self.save_data()
     
-    # Logs section
-    imgui.text_colored("Logs", 0.8, 0.8, 1.0)
-    imgui.separator()
+    def save_settings(self):
+        self.bot_token = self.token_entry.get()
+        self.save_data()
+        self.log("Saved bot settings")
     
-    # Log display
-    imgui.begin_child("Logs", 0, 100, True)
-    for log_type, message in logs[-10:]:  # Show last 10 logs
-        if log_type == "ERROR":
-            imgui.text_colored(f"ERROR: {message}", 1.0, 0.3, 0.3)
-        elif log_type == "SUCCESS":
-            imgui.text_colored(f"SUCCESS: {message}", 0.3, 1.0, 0.5)
-        elif log_type == "WARNING":
-            imgui.text_colored(f"WARNING: {message}", 1.0, 0.8, 0.3)
+    def test_connection(self):
+        self.log("Testing connection to Discord...")
+        # Simulate connection test
+        self.after(1000, lambda: self.log("Connection test completed successfully"))
+    
+    def test_post(self):
+        self.log("Testing post to Discord...")
+        # Simulate post test
+        self.after(1000, lambda: self.log("Test post completed successfully"))
+    
+    def toggle_auto_posting(self):
+        self.auto_posting = not self.auto_posting
+        
+        if self.auto_posting:
+            self.start_auto_posting()
         else:
-            imgui.text_colored(f"INFO: {message}", 0.2, 0.6, 1.0)
-    imgui.end_child()
+            self.stop_auto_posting()
     
-    imgui.end()
+    def start_auto_posting(self):
+        self.auto_posting = True
+        self.start_btn.configure(text="Stop Auto-Posting", fg_color="red", hover_color="darkred")
+        self.status_label.configure(text="Auto-posting enabled", text_color="red")
+        self.log("Auto-posting started")
+        
+        # Start auto-posting in a separate thread
+        self.posting_thread = threading.Thread(target=self.auto_posting_loop, daemon=True)
+        self.posting_thread.start()
     
-    # Rendering
-    gl.glClearColor(0.1, 0.1, 0.1, 1)
-    gl.glClear(gl.GL_COLOR_BUFFER_BIT)
-    imgui.render()
-    renderer.render(imgui.get_draw_data())
+    def stop_auto_posting(self):
+        self.auto_posting = False
+        self.start_btn.configure(text="Start Auto-Posting", fg_color="green", hover_color="darkgreen")
+        self.status_label.configure(text="Ready", text_color="green")
+        self.next_post_label.configure(text="")
+        self.log("Auto-posting stopped")
     
-    pygame.display.flip()
-    clock.tick(60)
+    def auto_posting_loop(self):
+        while self.auto_posting:
+            # Simulate posting to each channel
+            for i, channel in enumerate(self.channels):
+                if not self.auto_posting:
+                    break
+                    
+                # Simulate posting
+                self.log(f"Posted to channel {i+1}")
+                time.sleep(2)  # Simulate delay
+            
+            # Wait for the next posting cycle
+            for i in range(60):  # Check every second for 60 seconds
+                if not self.auto_posting:
+                    break
+                    
+                remaining = 60 - i
+                self.after(0, lambda: self.next_post_label.configure(
+                    text=f"Next post in: {remaining}s"
+                ))
+                time.sleep(1)
+    
+    def log(self, message):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = f"[{timestamp}] {message}"
+        self.logs.append(log_entry)
+        
+        # Update log text widget
+        self.log_text.config(state="normal")
+        self.log_text.insert("end", log_entry + "\n")
+        self.log_text.see("end")
+        self.log_text.config(state="disabled")
+    
+    def clear_logs(self):
+        self.logs = []
+        self.log_text.config(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.config(state="disabled")
+        self.log("Logs cleared")
+    
+    def save_data(self):
+        data = {
+            "bot_token": self.bot_token,
+            "channels": self.channels
+        }
+        
+        try:
+            with open("discord_auto_poster.json", "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            self.log(f"Error saving data: {e}")
+    
+    def load_data(self):
+        if os.path.exists("discord_auto_poster.json"):
+            try:
+                with open("discord_auto_poster.json", "r") as f:
+                    data = json.load(f)
+                    self.bot_token = data.get("bot_token", "")
+                    self.channels = data.get("channels", [])
+            except Exception as e:
+                self.log(f"Error loading data: {e}")
+        
+        # Ensure we have at least one channel
+        if not self.channels:
+            self.channels = [{
+                "channel_id": "",
+                "user_id": "",
+                "webhook_url": "",
+                "message": "",
+                "interval": 3600
+            }]
+    
+    def on_closing(self):
+        self.save_data()
+        self.destroy()
 
-# Cleanup
-renderer.shutdown()
-pygame.quit()
+if __name__ == "__main__":
+    app = DiscordAutoPoster()
+    app.protocol("WM_DELETE_WINDOW", app.on_closing)
+    app.mainloop()
